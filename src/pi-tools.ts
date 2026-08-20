@@ -120,7 +120,7 @@ export async function listDirectoryTool(input: LsToolInput, context: ToolContext
 
 export async function runShellTool(input: BashToolInput, context: ToolContext): Promise<ToolResponse> {
   const tool = createBashTool(context.cwd);
-  const timeout = input.timeout === undefined ? 30 : Math.min(input.timeout, 300);
+  const timeout = input.timeout === undefined ? 300 : Math.min(input.timeout, 1800);
 
   return runTool((params) => tool.execute("run_shell", params), {
     command: input.command,

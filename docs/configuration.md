@@ -77,7 +77,7 @@ DevSpace uses a single-user OAuth approval flow.
 
 | Variable | Default |
 | --- | --- |
-| `DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | `3600` |
+| `DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | `1296000` |
 | `DEVSPACE_OAUTH_REFRESH_TOKEN_TTL_SECONDS` | `2592000` |
 | `DEVSPACE_OAUTH_SCOPES` | `devspace` |
 | `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS` | `chatgpt.com,localhost,127.0.0.1` |

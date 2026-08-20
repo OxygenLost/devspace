@@ -213,7 +213,7 @@ function serverInstructions(config: ServerConfig): string {
 
   const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. `;
 
-  return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${artifactInstruction}${showChangesInstruction}`;
+  return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted source-file modifications and ${toolNames.write} for new files or complete rewrites. Use ${toolNames.shell} for commands whose normal behavior may create or modify files, including git clone/checkout, dependency installation, code generators, package scripts, tests, and builds, as well as inspection commands that are better executed by the shell. Shell commands run with the local user's authority and are not sandboxed merely because they start in a workspace; do not use them to bypass configured filesystem boundaries or perform unrelated destructive changes.${artifactInstruction}${showChangesInstruction}`;
 }
 
 function formatVisibleAgent(agent: {
@@ -1561,8 +1561,8 @@ export function createMcpServer(
     {
       title: "Bash",
       description: config.toolMode !== "full"
-        ? `Run a shell command in a workspace. Use only for tests, builds, git inspection, package scripts, search, file discovery, and directory inspection. In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. This is powerful execution and should only be exposed behind strong authentication.`
-        : `Run a shell command in a workspace. Use only for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. This is powerful execution and should only be exposed behind strong authentication.`,
+        ? `Run a shell command in a workspace. Commands may create or modify files when that is their normal purpose, including git clone/checkout, dependency installation, code generators, package scripts, tests, and builds. In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for inspection. Prefer ${toolNames.read} for direct file reads and ${toolNames.edit}/${toolNames.write} for straightforward source-file edits. Shell execution has the local user's authority and is not a filesystem sandbox; do not use it to bypass configured boundaries or perform unrelated destructive changes. This is powerful execution and should only be exposed behind strong authentication.`
+        : `Run a shell command in a workspace. Commands may create or modify files when that is their normal purpose, including git clone/checkout, dependency installation, code generators, package scripts, tests, and builds. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for inspection, and ${toolNames.edit}/${toolNames.write} for straightforward source-file edits. Shell execution has the local user's authority and is not a filesystem sandbox; do not use it to bypass configured boundaries or perform unrelated destructive changes. This is powerful execution and should only be exposed behind strong authentication.`,
       inputSchema: {
         workspaceId: z
           .string()
@@ -1570,7 +1570,7 @@ export function createMcpServer(
         command: z
           .string()
           .describe(
-            `Shell command to run. Must not create or modify project files; use ${toolNames.edit} or ${toolNames.write} for file changes.`,
+            `Shell command to run. It may create or modify files when that is the command's normal purpose (for example git clone, dependency installation, code generation, package scripts, tests, or builds). Prefer ${toolNames.edit} or ${toolNames.write} for straightforward source-file edits.`,
           ),
         workingDirectory: z
           .string()
@@ -1581,9 +1581,9 @@ export function createMcpServer(
         timeout: z
           .number()
           .positive()
-          .max(300)
+          .max(1800)
           .optional()
-          .describe("Timeout in seconds. Defaults to 30, max 300."),
+          .describe("Timeout in seconds. Defaults to 300, max 1800."),
       },
       outputSchema: resultOutputSchema(),
       ...toolWidgetDescriptorMeta(config, "shell"),

@@ -58,6 +58,25 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.ok(Array.isArray(card.agents));
 });
 
+test("bash tool explicitly permits file-producing development commands", async (t) => {
+  const context = await fixture(t);
+  const tools = await context.client.listTools();
+  const bashTool = tools.tools.find((tool) => tool.name === "bash");
+
+  assert.ok(bashTool);
+  assert.match(bashTool.description ?? "", /git clone\/checkout/);
+  assert.match(bashTool.description ?? "", /dependency installation/);
+  assert.doesNotMatch(bashTool.description ?? "", /Do not use bash to create or modify files/);
+
+  const inputSchema = bashTool.inputSchema as {
+    properties?: Record<string, { description?: string }>;
+  };
+  const commandDescription = inputSchema.properties?.command?.description ?? "";
+  assert.match(commandDescription, /git clone/);
+  assert.match(commandDescription, /may create or modify files/);
+  assert.doesNotMatch(commandDescription, /Must not create or modify project files/);
+});
+
 test("concurrent checkout opens return one full context and one reuse instruction", async (t) => {
   const context = await fixture(t);
   const [first, second] = await Promise.all([

@@ -110,7 +110,7 @@ assert.deepEqual(loadConfig(baseEnv).oauth.allowedRedirectHosts, [
   "localhost",
   "127.0.0.1",
 ]);
-assert.equal(loadConfig(baseEnv).oauth.accessTokenTtlSeconds, 3600);
+assert.equal(loadConfig(baseEnv).oauth.accessTokenTtlSeconds, 1296000);
 assert.equal(loadConfig(baseEnv).oauth.refreshTokenTtlSeconds, 2592000);
 
 assert.deepEqual(
