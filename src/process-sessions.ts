@@ -55,6 +55,7 @@ interface ProcessSession {
   workspaceId: string;
   process?: ManagedProcess;
   startedAt: number;
+  finishedAt?: number;
   columns: number;
   rows: number;
   buffer: HeadTailBuffer;
@@ -386,6 +387,7 @@ export class ProcessSessionManager {
 
   private finish(session: ProcessSession, exitCode?: number, signal?: string): void {
     if (!session.running) return;
+    session.finishedAt = Date.now();
     session.running = false;
     session.exitCode = exitCode;
     session.signal = signal;
@@ -413,7 +415,7 @@ export class ProcessSessionManager {
       running: session.running,
       exitCode: session.exitCode,
       signal: session.signal,
-      wallTimeMs: Date.now() - session.startedAt,
+      wallTimeMs: (session.finishedAt ?? Date.now()) - session.startedAt,
     };
   }
 

@@ -86,6 +86,27 @@ assert.equal(completed.running, false);
 assert.equal(completed.exitCode, 0);
 assert.match(completed.output, /finished/);
 
+const frozenDuration = await manager.start({
+  workspaceId: "workspace-a",
+  cwd: process.cwd(),
+  command: `${node} -e "setTimeout(() => process.exit(0), 60)"`,
+  yieldTimeMs: 1,
+});
+assert.equal(frozenDuration.running, true);
+assert.ok(frozenDuration.sessionId);
+await new Promise((resolve) => setTimeout(resolve, 220));
+const frozenDurationCompleted = await manager.write({
+  workspaceId: "workspace-a",
+  sessionId: frozenDuration.sessionId,
+  yieldTimeMs: 1,
+});
+assert.equal(frozenDurationCompleted.running, false);
+assert.equal(frozenDurationCompleted.exitCode, 0);
+assert.ok(
+  frozenDurationCompleted.wallTimeMs < 180,
+  `completed process wall time must freeze at exit, got ${frozenDurationCompleted.wallTimeMs}ms`,
+);
+
 const interactive = await manager.start({
   workspaceId: "workspace-a",
   cwd: process.cwd(),
