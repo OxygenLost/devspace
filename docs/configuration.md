@@ -97,7 +97,7 @@ MCP clients discover metadata from:
 | --- | --- |
 | `minimal` | Default. Exposes `open_workspace`, `read`, `write`, `edit`, and `bash`. Clients use `bash` with tools such as `rg`, `find`, and `ls` for inspection. |
 | `full` | Exposes the minimal tools plus dedicated `grep`, `glob`, and `ls` tools. |
-| `codex` | Experimental. Exposes `open_workspace`, `read`, `apply_patch`, `exec_command`, and `write_stdin`. Existing mutation and shell tools are hidden. |
+| `codex` | Experimental. Exposes `open_workspace`, `read`, `apply_patch`, `exec_command`, `write_stdin`, `process_read`, `process_list`, and `process_terminate`. Existing mutation and shell tools are hidden. |
 
 `DEVSPACE_MINIMAL_TOOLS` remains a backward-compatible alias when
 `DEVSPACE_TOOL_MODE` is unset: `1` selects `minimal` and `0` selects `full`.
@@ -107,7 +107,11 @@ its fixed short tool names regardless of `DEVSPACE_TOOL_NAMING`.
 Codex-mode commands run without a PTY by default. Set `tty: true` on
 `exec_command` for interactive terminal programs. PTY support uses the optional
 `node-pty` dependency; `write_stdin` can send input, poll output, and resize PTY
-sessions.
+sessions. Process sessions retain sequenced output for a bounded recovery window.
+Use `process_list` to rediscover a session after a lost response and
+`process_read` with the previous `nextSeq` as `afterSeq` for non-destructive,
+incremental reads. Reusing an older `afterSeq` replays retained chunks;
+`process_terminate` requests SIGTERM for a retained process.
 
 ## Widgets
 

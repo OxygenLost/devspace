@@ -48,7 +48,13 @@ import {
   McpSessionRegistry,
   type McpSessionCloseResult,
 } from "./mcp-sessions.js";
-import { ProcessSessionManager, type ProcessSnapshot } from "./process-sessions.js";
+import type {
+  ExecutionReadSnapshot,
+  ExecutionSessionRuntime,
+  ExecutionSessionSummary,
+  ExecutionSnapshot,
+} from "./execution-sessions.js";
+import { ProcessSessionManager } from "./process-sessions.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { openAiConversationScopeId } from "./request-meta.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
@@ -86,6 +92,12 @@ const SHELL_TOOL_ANNOTATIONS = {
   destructiveHint: true,
   idempotentHint: false,
   openWorldHint: true,
+};
+const PROCESS_READ_TOOL_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
 };
 
 interface RunningServer {
@@ -200,7 +212,7 @@ function serverInstructions(config: ServerConfig): string {
       : "";
 
   if (config.toolMode === "codex") {
-    return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
+    return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. If an exec response is lost or replayable output is needed, use process_list to rediscover retained executions, process_read with afterSeq to read output without consuming it, and process_terminate to stop a retained process. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -502,7 +514,7 @@ async function assertWorkspaceAppAssets(): Promise<void> {
   }
 }
 
-function processResult(snapshot: ProcessSnapshot): string {
+function processResult(snapshot: ExecutionSnapshot): string {
   const status = snapshot.running
     ? `Process running with session ID ${snapshot.sessionId}.`
     : snapshot.signal
@@ -519,13 +531,16 @@ function processOutputSchema(): z.ZodRawShape {
     signal: z.string().optional(),
     wallTimeMs: z.number().nonnegative(),
     outputTruncated: z.boolean(),
+    nextSeq: z.number().int().nonnegative(),
+    firstRetainedSeq: z.number().int().nonnegative(),
+    lastSeq: z.number().int().nonnegative(),
   });
 }
 
 function processToolResponse(
   tool: "exec_command" | "write_stdin",
   workspaceId: string,
-  snapshot: ProcessSnapshot,
+  snapshot: ExecutionSnapshot,
   summary: Record<string, unknown>,
 ) {
   const result = processResult(snapshot);
@@ -549,15 +564,106 @@ function processToolResponse(
       signal: snapshot.signal,
       wallTimeMs: snapshot.wallTimeMs,
       outputTruncated: snapshot.outputTruncated,
+      nextSeq: snapshot.nextSeq,
+      firstRetainedSeq: snapshot.firstRetainedSeq,
+      lastSeq: snapshot.lastSeq,
     },
   };
+}
+
+const processChunkOutputSchema = z.object({
+  seq: z.number().int().nonnegative(),
+  stream: z.enum(["stdout", "stderr", "pty", "system"]),
+  data: z.string(),
+  timestamp: z.number().nonnegative(),
+});
+
+const processSessionSummaryOutputSchema = z.object({
+  sessionId: z.number().int().positive(),
+  command: z.string(),
+  workingDirectory: z.string(),
+  tty: z.boolean(),
+  osPid: z.number().int().positive().optional(),
+  startedAt: z.number().nonnegative(),
+  finishedAt: z.number().nonnegative().optional(),
+  running: z.boolean(),
+  exitCode: z.number().int().optional(),
+  signal: z.string().optional(),
+  firstRetainedSeq: z.number().int().nonnegative(),
+  lastSeq: z.number().int().nonnegative(),
+});
+
+function processReadResult(snapshot: ExecutionReadSnapshot): string {
+  const base = processResult(snapshot);
+  const replay = snapshot.gap
+    ? `Requested cursor ${snapshot.afterSeq} is older than retained output; replay starts at sequence ${snapshot.firstRetainedSeq}.`
+    : `Replay cursor advanced from ${snapshot.afterSeq} to ${snapshot.nextSeq}.`;
+  const remaining = snapshot.hasMore ? " More retained output is available." : "";
+  return `${base}\n${replay}${remaining}`;
+}
+
+function processReadResponse(
+  workspaceId: string,
+  snapshot: ExecutionReadSnapshot,
+) {
+  const result = processReadResult(snapshot);
+  const content = [textBlock(result)];
+  return {
+    content,
+    _meta: {
+      tool: "process_read",
+      card: {
+        workspaceId,
+        summary: {
+          sessionId: snapshot.sessionId,
+          running: snapshot.running,
+          afterSeq: snapshot.afterSeq,
+          nextSeq: snapshot.nextSeq,
+          lastSeq: snapshot.lastSeq,
+          gap: snapshot.gap,
+          hasMore: snapshot.hasMore,
+        },
+        payload: { content },
+      },
+    },
+    structuredContent: {
+      result,
+      sessionId: snapshot.sessionId,
+      running: snapshot.running,
+      exitCode: snapshot.exitCode,
+      signal: snapshot.signal,
+      wallTimeMs: snapshot.wallTimeMs,
+      outputTruncated: snapshot.outputTruncated,
+      afterSeq: snapshot.afterSeq,
+      nextSeq: snapshot.nextSeq,
+      firstRetainedSeq: snapshot.firstRetainedSeq,
+      lastSeq: snapshot.lastSeq,
+      gap: snapshot.gap,
+      hasMore: snapshot.hasMore,
+      chunks: snapshot.chunks,
+    },
+  };
+}
+
+function processListResult(sessions: ExecutionSessionSummary[]): string {
+  if (sessions.length === 0) return "No retained process sessions for this workspace.";
+  return sessions
+    .map((session) => {
+      const state = session.running
+        ? "running"
+        : session.signal
+          ? `exited (${session.signal})`
+          : `exited (${session.exitCode ?? "unknown"})`;
+      return `#${session.sessionId} ${state} cwd=${session.workingDirectory} seq=${session.lastSeq}: ${session.command}`;
+    })
+    .join("\n");
 }
 
 function registerCodexProcessTools(
   server: McpServer,
   config: ServerConfig,
   workspaces: WorkspaceRegistry,
-  processSessions: ProcessSessionManager,
+  processSessions: ExecutionSessionRuntime,
 ): void {
   registerAppTool(
     server,
@@ -607,6 +713,7 @@ function registerCodexProcessTools(
         command: cmd,
         cwd,
         workspaceRoot: workspace.root,
+        workingDirectory: workingDirectory ?? ".",
         tty,
         columns,
         rows,
@@ -695,13 +802,193 @@ function registerCodexProcessTools(
       });
     },
   );
+
+  registerAppTool(
+    server,
+    "process_read",
+    {
+      title: "Read retained process output",
+      description:
+        "Read retained process output without consuming it. Pass the previous nextSeq as afterSeq to continue incrementally. Reusing the same afterSeq replays the same retained output, which allows recovery after a lost MCP response.",
+      inputSchema: {
+        workspaceId: z.string().describe("Workspace identifier used to start the process."),
+        sessionId: z.number().int().positive().describe("Retained process session identifier."),
+        afterSeq: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Return retained output after this sequence number. Defaults to 0."),
+        waitMs: z
+          .number()
+          .int()
+          .min(0)
+          .max(30_000)
+          .optional()
+          .describe("Wait for new output or process exit when no newer output is available. Defaults to 5000."),
+        maxBytes: z
+          .number()
+          .int()
+          .min(4_096)
+          .max(512 * 1_024)
+          .optional()
+          .describe("Maximum retained output bytes returned in one call. Defaults to 65536."),
+      },
+      outputSchema: resultOutputSchema({
+        sessionId: z.number().int().positive(),
+        running: z.boolean(),
+        exitCode: z.number().int().optional(),
+        signal: z.string().optional(),
+        wallTimeMs: z.number().nonnegative(),
+        outputTruncated: z.boolean(),
+        afterSeq: z.number().int().nonnegative(),
+        nextSeq: z.number().int().nonnegative(),
+        firstRetainedSeq: z.number().int().nonnegative(),
+        lastSeq: z.number().int().nonnegative(),
+        gap: z.boolean(),
+        hasMore: z.boolean(),
+        chunks: z.array(processChunkOutputSchema),
+      }),
+      ...toolWidgetDescriptorMeta(config, "shell"),
+      annotations: PROCESS_READ_TOOL_ANNOTATIONS,
+    },
+    async ({ workspaceId, sessionId, afterSeq, waitMs, maxBytes }) => {
+      const startedAt = performance.now();
+      workspaces.getWorkspace(workspaceId);
+      const snapshot = await processSessions.read({
+        workspaceId,
+        sessionId,
+        afterSeq,
+        waitMs,
+        maxBytes,
+      });
+
+      logToolCall(config, {
+        tool: "process_read",
+        workspaceId,
+        success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+
+      return processReadResponse(workspaceId, snapshot);
+    },
+  );
+
+  registerAppTool(
+    server,
+    "process_list",
+    {
+      title: "List retained processes",
+      description:
+        "List running and recently completed process sessions retained for this workspace. Use this to rediscover a process when an exec_command or write_stdin response was lost.",
+      inputSchema: {
+        workspaceId: z.string().describe(workspaceIdDescription),
+      },
+      outputSchema: resultOutputSchema({
+        sessions: z.array(processSessionSummaryOutputSchema),
+      }),
+      ...toolWidgetDescriptorMeta(config, "shell"),
+      annotations: PROCESS_READ_TOOL_ANNOTATIONS,
+    },
+    async ({ workspaceId }) => {
+      const startedAt = performance.now();
+      workspaces.getWorkspace(workspaceId);
+      const sessions = processSessions.list(workspaceId).map((session) => ({
+        ...session,
+        command: commandPreview(session.command),
+      }));
+      const result = processListResult(sessions);
+      const content = [textBlock(result)];
+
+      logToolCall(config, {
+        tool: "process_list",
+        workspaceId,
+        success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+
+      return {
+        content,
+        _meta: {
+          tool: "process_list",
+          card: {
+            workspaceId,
+            summary: { sessions: sessions.length },
+            payload: { content },
+          },
+        },
+        structuredContent: { result, sessions },
+      };
+    },
+  );
+
+  registerAppTool(
+    server,
+    "process_terminate",
+    {
+      title: "Terminate process",
+      description:
+        "Request SIGTERM for a retained process session and briefly wait for its state to update.",
+      inputSchema: {
+        workspaceId: z.string().describe("Workspace identifier used to start the process."),
+        sessionId: z.number().int().positive().describe("Retained process session identifier."),
+        waitMs: z
+          .number()
+          .int()
+          .min(0)
+          .max(30_000)
+          .optional()
+          .describe("Milliseconds to wait for process state to update. Defaults to 2000."),
+      },
+      outputSchema: resultOutputSchema({
+        session: processSessionSummaryOutputSchema,
+      }),
+      ...toolWidgetDescriptorMeta(config, "shell"),
+      annotations: SHELL_TOOL_ANNOTATIONS,
+    },
+    async ({ workspaceId, sessionId, waitMs }) => {
+      const startedAt = performance.now();
+      workspaces.getWorkspace(workspaceId);
+      const session = await processSessions.terminateAndWait(workspaceId, sessionId, waitMs);
+      const visibleSession = { ...session, command: commandPreview(session.command) };
+      const result = session.running
+        ? `Termination requested for process session ${sessionId}; it is still running.`
+        : `Process session ${sessionId} has exited.`;
+      const content = [textBlock(result)];
+
+      logToolCall(config, {
+        tool: "process_terminate",
+        workspaceId,
+        success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+
+      return {
+        content,
+        _meta: {
+          tool: "process_terminate",
+          card: {
+            workspaceId,
+            summary: {
+              sessionId,
+              running: session.running,
+              exitCode: session.exitCode,
+              signal: session.signal,
+            },
+            payload: { content },
+          },
+        },
+        structuredContent: { result, session: visibleSession },
+      };
+    },
+  );
 }
 
 export function createMcpServer(
   config: ServerConfig,
   workspaces: WorkspaceRegistry,
   reviewCheckpoints: ReturnType<typeof createReviewCheckpointManager>,
-  processSessions: ProcessSessionManager,
+  processSessions: ExecutionSessionRuntime,
   localAgentProviders: LocalAgentProviderAvailability[],
   incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
 ): McpServer {

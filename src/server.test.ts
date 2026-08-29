@@ -62,8 +62,12 @@ test("bash tool explicitly permits file-producing development commands", async (
   const context = await fixture(t);
   const tools = await context.client.listTools();
   const bashTool = tools.tools.find((tool) => tool.name === "bash");
+  const toolNames = new Set(tools.tools.map((tool) => tool.name));
 
   assert.ok(bashTool);
+  assert.equal(toolNames.has("process_read"), false);
+  assert.equal(toolNames.has("process_list"), false);
+  assert.equal(toolNames.has("process_terminate"), false);
   assert.match(bashTool.description ?? "", /git clone\/checkout/);
   assert.match(bashTool.description ?? "", /dependency installation/);
   assert.doesNotMatch(bashTool.description ?? "", /Do not use bash to create or modify files/);
@@ -75,6 +79,83 @@ test("bash tool explicitly permits file-producing development commands", async (
   assert.match(commandDescription, /git clone/);
   assert.match(commandDescription, /may create or modify files/);
   assert.doesNotMatch(commandDescription, /Must not create or modify project files/);
+});
+
+test("codex process tools retain and replay execution output for recovery", async (t) => {
+  const context = await fixture(t, { toolMode: "codex" });
+  const tools = await context.client.listTools();
+  const names = new Set(tools.tools.map((tool) => tool.name));
+  for (const name of [
+    "exec_command",
+    "write_stdin",
+    "process_read",
+    "process_list",
+    "process_terminate",
+  ]) {
+    assert.equal(names.has(name), true, `expected ${name} in codex tool mode`);
+  }
+
+  const processReadTool = tools.tools.find((tool) => tool.name === "process_read");
+  assert.match(processReadTool?.description ?? "", /without consuming it/);
+  assert.match(processReadTool?.description ?? "", /lost MCP response/);
+
+  const opened = await callOpen(context.client, context.project, "chat-recovery");
+  const workspaceId = structuredContent(opened).workspaceId;
+  assert.ok(typeof workspaceId === "string");
+  const node = process.platform === "win32"
+    ? `"${process.execPath}"`
+    : JSON.stringify(process.execPath);
+
+  const started = await context.client.callTool({
+    name: "exec_command",
+    arguments: {
+      workspaceId,
+      cmd: `${node} -e "console.log('recoverable-output'); setInterval(() => {}, 1000)"`,
+      yieldTimeMs: 5,
+    },
+  });
+  const startedStructured = structuredContent(started);
+  assert.equal(startedStructured.running, true);
+  const sessionId = startedStructured.sessionId;
+  assert.ok(typeof sessionId === "number");
+
+  const listed = await context.client.callTool({
+    name: "process_list",
+    arguments: { workspaceId },
+  });
+  const listedSessions = structuredContent(listed).sessions;
+  assert.ok(Array.isArray(listedSessions));
+  assert.ok(
+    listedSessions.some(
+      (session) =>
+        typeof session === "object" &&
+        session !== null &&
+        (session as { sessionId?: unknown }).sessionId === sessionId,
+    ),
+  );
+
+  const firstRead = await context.client.callTool({
+    name: "process_read",
+    arguments: { workspaceId, sessionId, afterSeq: 0, waitMs: 2_000, maxBytes: 4_096 },
+  });
+  assert.match(responseText(firstRead), /recoverable-output/);
+  const firstReadStructured = structuredContent(firstRead);
+  assert.ok(Array.isArray(firstReadStructured.chunks));
+  assert.ok(typeof firstReadStructured.nextSeq === "number");
+
+  const replayed = await context.client.callTool({
+    name: "process_read",
+    arguments: { workspaceId, sessionId, afterSeq: 0, waitMs: 0, maxBytes: 4_096 },
+  });
+  const replayedStructured = structuredContent(replayed);
+  assert.deepEqual(replayedStructured.chunks, firstReadStructured.chunks);
+  assert.equal(replayedStructured.nextSeq, firstReadStructured.nextSeq);
+
+  const terminated = await context.client.callTool({
+    name: "process_terminate",
+    arguments: { workspaceId, sessionId, waitMs: 2_000 },
+  });
+  assert.match(responseText(terminated), /has exited/);
 });
 
 test("concurrent checkout opens return one full context and one reuse instruction", async (t) => {
@@ -194,7 +275,10 @@ interface ServerFixture {
   close: () => Promise<void>;
 }
 
-async function fixture(t: TestContext, options: { git?: boolean } = {}): Promise<ServerFixture> {
+async function fixture(
+  t: TestContext,
+  options: { git?: boolean; toolMode?: "minimal" | "full" | "codex" } = {},
+): Promise<ServerFixture> {
   const root = await mkdtemp(join(tmpdir(), "devspace-server-test-"));
   const project = join(root, "project");
   const agentDir = join(root, "agent");
@@ -228,17 +312,18 @@ async function fixture(t: TestContext, options: { git?: boolean } = {}): Promise
     DEVSPACE_WORKTREE_ROOT: join(root, ".worktrees"),
     DEVSPACE_AGENT_DIR: agentDir,
     DEVSPACE_WIDGETS: "full",
-    DEVSPACE_TOOL_MODE: "full",
+    DEVSPACE_TOOL_MODE: options.toolMode ?? "full",
     DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
     PORT: "1",
   });
   const store = new SqliteWorkspaceStore(stateDir);
   const workspaces = new WorkspaceRegistry(config, store);
+  const processSessions = new ProcessSessionManager();
   const server = createMcpServer(
     config,
     workspaces,
     createReviewCheckpointManager(),
-    new ProcessSessionManager(),
+    processSessions,
     [],
     [],
   );
@@ -255,6 +340,7 @@ async function fixture(t: TestContext, options: { git?: boolean } = {}): Promise
     closed = true;
     await client.close();
     await server.close();
+    processSessions.shutdown();
     store.close();
   };
 

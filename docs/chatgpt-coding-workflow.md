@@ -171,11 +171,19 @@ The experimental Codex-style surface is enabled with
 - `apply_patch`
 - `exec_command`
 - `write_stdin`
+- `process_read`
+- `process_list`
+- `process_terminate`
 
 In this mode, `write`, `edit`, `bash`, `grep`, `glob`, and `ls` are not
 registered. `exec_command` returns a process session ID when a command is still
 running after its yield window. Use `write_stdin` to poll it, send input, resize
-a PTY, or send Ctrl-C. Set `tty: true` only for commands that need a terminal.
+a PTY, or send Ctrl-C. Process output is retained for recovery instead of being
+destroyed when a response is read. Use `process_list` to rediscover running or
+recently completed sessions, `process_read` with `afterSeq` to replay retained
+output without consuming it, and `process_terminate` to stop a retained process.
+Repeated `process_read` calls with the same `afterSeq` replay the same retained
+chunks. Set `tty: true` only for commands that need a terminal.
 
 ## Show Changes
 
