@@ -1244,7 +1244,8 @@ export function createMcpServer(
       title: "Read file",
       description:
         [
-          "Read a file in a workspace. Use this for file inspection instead of shell commands like cat or sed.",
+          "Read a text file or local image in a workspace. Supported images (JPG/JPEG, PNG, GIF, WebP, BMP) are returned as model-visible image attachments for visual analysis.",
+          "Use this for file inspection instead of shell commands like cat, sed, base64, or image-conversion workarounds.",
           "Use this tool to inspect relevant AGENTS.md or CLAUDE.md files listed by open_workspace before working in nested directories.",
           config.skillsEnabled
             ? "If available skills were returned and a task matches one, read that skill's path before proceeding. Skill paths may be outside the workspace; only advertised SKILL.md files and files under already-loaded skill directories are readable."

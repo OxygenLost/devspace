@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -79,6 +79,46 @@ test("bash tool explicitly permits file-producing development commands", async (
   assert.match(commandDescription, /git clone/);
   assert.match(commandDescription, /may create or modify files/);
   assert.doesNotMatch(commandDescription, /Must not create or modify project files/);
+});
+
+test("read tool advertises and returns local images as MCP image content", async (t) => {
+  const context = await fixture(t);
+  const imageBytes = await readFile(new URL("../docs/assets/devspace-logo-light.png", import.meta.url));
+  await writeFile(join(context.project, "pixel.png"), imageBytes);
+
+  const tools = await context.client.listTools();
+  const readTool = tools.tools.find((tool) => tool.name === "read");
+  assert.ok(readTool);
+  assert.match(readTool.description ?? "", /local image/);
+  assert.match(readTool.description ?? "", /model-visible image attachments/);
+  assert.match(readTool.description ?? "", /JPG\/JPEG, PNG, GIF, WebP, BMP/);
+
+  const opened = await callOpen(context.client, context.project, "chat-image-read");
+  const workspaceId = structuredContent(opened).workspaceId;
+  assert.ok(typeof workspaceId === "string");
+
+  const result = await context.client.callTool({
+    name: "read",
+    arguments: { workspaceId, path: "pixel.png" },
+  });
+  const content = (result as { content?: unknown }).content;
+  assert.ok(Array.isArray(content));
+  assert.match(responseText(result), /Read image file \[image\/png\]/);
+
+  const image = content.find(
+    (item) =>
+      typeof item === "object" &&
+      item !== null &&
+      (item as { type?: unknown }).type === "image",
+  ) as { data?: unknown; mimeType?: unknown } | undefined;
+  assert.ok(image);
+  assert.equal(image.mimeType, "image/png");
+  assert.equal(typeof image.data, "string");
+  assert.ok((image.data as string).length > 0);
+
+  const structured = structuredContent(result);
+  assert.equal(structured.result, responseText(result));
+  assert.doesNotMatch(structured.result as string, /iVBOR/);
 });
 
 test("codex process tools retain and replay execution output for recovery", async (t) => {
